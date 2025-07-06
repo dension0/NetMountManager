@@ -2,8 +2,10 @@ import subprocess
 import sys
 from PyQt6.QtWidgets import QInputDialog, QMessageBox, QLineEdit
 
-def ask_admin_password(T, parent=None):
-    log(T["displaying_password_prompt"])
+def ask_admin_password(T, parent=None, log=None):
+    if log:
+        log(T["displaying_password_prompt"])
+
     max_tries = 3
     for attempt in range(max_tries):
         text, ok = QInputDialog.getText(

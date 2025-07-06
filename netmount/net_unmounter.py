@@ -54,10 +54,10 @@ signal.signal(signal.SIGTERM, create_signal_handler(T))
 # 🔁 Daemonosztály
 class UnmountManager:
     def __init__(self):
-        self.password = ask_admin_password(T)
-        self.something_unmounted = False
         self.log_window = None
         self.log_dialog = None
+        self.password = ask_admin_password(T, log=self.log)
+        self.something_unmounted = False
 
     def log(self, message):
         print(f"[LOG] {message}")

@@ -100,7 +100,7 @@ def auto_mount():
     uid = os.getuid()
     gid = os.getgid()
     prev_was_con = False
-    admin_password = ask_admin_password(T)
+    admin_password = ask_admin_password(T, log=log)
 
     if not os.path.exists(SECURE_FILE):
         log(T["no_config_file"])
