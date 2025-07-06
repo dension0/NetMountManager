@@ -1,0 +1,23 @@
+# 🗂 Ideiglenes és cache fájlok
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# 🔐 Titkosított konfiguráció
+data/
+
+# 🐍 Virtuális környezetek (ha lennének)
+env/
+venv/
+
+# 🐛 Debug logok
+*.log
+
+# 📦 PyInstaller / build output (ha később lenne)
+dist/
+build/
+
+# 🧪 Tesztlefedettségi fájlok (ha unittest később)
+.coverage
+htmlcov/
