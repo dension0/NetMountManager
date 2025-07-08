@@ -3,9 +3,9 @@ import os, sys, json, socket, subprocess, time, signal
 from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QInputDialog, QMessageBox, QLineEdit,
-    QTextEdit, QDialog, QVBoxLayout, QLabel
+    QTextEdit, QDialog, QVBoxLayout, QLabel, QSystemTrayIcon, QPushButton
 )
-from PyQt6.QtGui import QIcon
+from PyQt6.QtGui import QIcon, QAction, QCursor
 from PyQt6.QtCore import QTimer, QLocale
 import xml.etree.ElementTree as ET
 
@@ -51,13 +51,25 @@ except Exception as e:
 signal.signal(signal.SIGINT, create_signal_handler(T))
 signal.signal(signal.SIGTERM, create_signal_handler(T))
 
-# 🔁 Daemonosztály
 class UnmountManager:
     def __init__(self):
         self.log_window = None
         self.log_dialog = None
-        self.password = ask_admin_password(T, log=self.log)
+        self.setup_tray_icon()
+        self.password = os.environ.get("NETMOUNT_PW")
         self.something_unmounted = False
+
+    def setup_tray_icon(self):
+        self.tray = QSystemTrayIcon()
+        self.tray.setIcon(QIcon(str(icon_path)))
+        self.tray.setToolTip(T["tray_tooltip"])
+
+        self.tray.activated.connect(self.on_tray_icon_activated)
+        self.tray.show()
+
+    def on_tray_icon_activated(self, reason):
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            self.show_log_window(from_tray=True)
 
     def log(self, message):
         print(f"[LOG] {message}")
@@ -100,21 +112,57 @@ class UnmountManager:
             QMessageBox.critical(None, T["unmount_failed_title"], T["unmount_failed_text"].format(error=e))
             return False
 
-    def show_log_window(self):
+    def show_log_window(self, from_tray=False):
+        if self.log_window and self.log_dialog:
+            if not from_tray:
+                self.log_dialog.close()
+            else:
+                return
+
         dialog = QDialog()
-        dialog.setWindowTitle(T["log_title"])
+
+        if from_tray:
+            dialog.setWindowTitle(T["log_title_log"])
+        else:
+            dialog.setWindowTitle(T["log_title"])
+
         layout = QVBoxLayout()
-        layout.addWidget(QLabel(T["log_label"]))
+
+        if from_tray:
+            layout.addWidget(QLabel(T["log_label_log"]))
+        else:
+            layout.addWidget(QLabel(T["log_label"]))
+
         self.log_window = QTextEdit()
         self.log_window.setReadOnly(True)
         layout.addWidget(self.log_window)
+
+        if from_tray:
+            exit_button = QPushButton(T["smb_check_exit"])
+            exit_button.clicked.connect(QApplication.quit)
+            layout.addWidget(exit_button)
+
         dialog.setLayout(layout)
         dialog.resize(500, 400)
+
+        def on_close(event):
+            self.log_window = None
+            self.log_dialog = None
+            event.accept()
+
+        dialog.closeEvent = on_close
+
         dialog.show()
         QApplication.processEvents()
         self.log_dialog = dialog
 
     def main_loop(self):
+        if self.password is None:
+            self.password = ask_admin_password(T, log=self.log)
+            if not self.password:
+                self.log(T["password_invalid_final"])
+                return
+
         self.log(T["cycle_start"])
 
         try:
@@ -122,8 +170,6 @@ class UnmountManager:
         except Exception as e:
             self.log(T["decryption_failed"].format(error=e))
             return
-
-        log_window_shown = False
 
         for mount in mounts:
             url = mount.get("url", "")
@@ -136,9 +182,8 @@ class UnmountManager:
             self.log(T["checking"].format(host=host, path=path))
 
             if self.is_cifs_mount_zombi(path) and not self.is_host_reachable(host):
-                if not log_window_shown:
-                    self.show_log_window()
-                    log_window_shown = True
+                self.show_log_window()
+                time.sleep(1)
                 self.log(T["unmount_required"].format(host=host))
 
                 if self.unmount_with_password(path):
@@ -146,6 +191,8 @@ class UnmountManager:
                 else:
                     self.log(T["password_invalid_final"])
                     return
+            else:
+                self.log(T["unmount_not_required"].format(host=host))
 
         if self.something_unmounted and self.log_dialog:
             clean_mount_bookmarks()

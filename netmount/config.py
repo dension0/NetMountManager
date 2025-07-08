@@ -29,8 +29,10 @@ ET.register_namespace("bookmark", BOOKMARK_NS)
 # 🚀 Automatikus indulási fájlok
 AUTOMOUNT_SCRIPT = Path.home() / ".config/autostart/net-automounts.desktop"
 AUTOMOUNT_EXEC = BASE_DIR / "netmount/auto_mount.py"
-SMBUNMOUNT_SCRIPT = Path.home() / ".config/systemd/user/smb-unmount.service"
+SMBUNMOUNT_SCRIPT = Path.home() / ".config/autostart/net_unmounter.desktop"
 SMBUNMOUNT_EXEC = BASE_DIR / "netmount/net_unmounter.py"
+
+SMBUNMOUNT_SCRIPT_OLD = Path.home() / ".config/systemd/user/smb-unmount.service"
 
 # 💡 Egyéb
 home_dir = str(Path.home())

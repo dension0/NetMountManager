@@ -12,13 +12,14 @@ import shlex
 import tempfile
 import time
 import socket
+import getpass
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QLabel, QLineEdit, QPushButton,
     QVBoxLayout, QHBoxLayout, QListWidget, QMessageBox,
     QFileDialog, QCheckBox, QListWidgetItem, QFrame, QToolButton,
-    QDialog, QTextEdit, QInputDialog
+    QDialog, QTextEdit, QInputDialog, QAbstractItemView, QSizePolicy
 )
 from PyQt6.QtCore import Qt, QLocale, QSize, QTimer, QObject, QThread, pyqtSignal
 from PyQt6.QtGui import QIcon
@@ -29,7 +30,7 @@ from netmount.decryptor import decrypt, encrypt
 
 from netmount.config import (
     XBEL_FILE, BOOKMARK_NS, SECURE_FILE, AUTOMOUNT_SCRIPT,
-    SMBUNMOUNT_SCRIPT, AUTOMOUNT_EXEC, SMBUNMOUNT_EXEC, icon_path
+    SMBUNMOUNT_SCRIPT, SMBUNMOUNT_SCRIPT_OLD, AUTOMOUNT_EXEC, SMBUNMOUNT_EXEC, icon_path
 )
 
 class LoadingDialog(QDialog):
@@ -90,30 +91,51 @@ class MountManager(QWidget):
         add_btn = QPushButton(self.T['add'])
         add_btn.setIcon(QIcon.fromTheme("list-add"))
         add_btn.clicked.connect(self.add_mount)
+        add_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         reset_btn = QPushButton(self.T['reset'])
         reset_btn.setToolTip(self.T['reset_tooltip'])
-        reset_btn.setIcon(QIcon.fromTheme("view-refresh"))  # vagy: "edit-clear" vagy "view-refresh"
+        reset_btn.setIcon(QIcon.fromTheme("view-refresh"))
         reset_btn.clicked.connect(self.reset_fields)
+
+        self.unmounter_btn = QPushButton()
+        self.unmounter_btn.setFixedWidth(250)
+        self.update_unmounter_button()
+        self.unmounter_btn.setToolTip(self.T['smb_unmounter_tooltip'])
+        self.unmounter_btn.clicked.connect(self.toggle_unmounter)
+        self.unmounter_timer = QTimer(self)
+        self.unmounter_timer.timeout.connect(self.update_unmounter_button)
+        self.unmounter_timer.start(2000)
 
         export_btn = QPushButton(self.T['export_title'])
         export_btn.setIcon(QIcon.fromTheme("document-save"))
-        export_btn.setStyleSheet("background-color: #a5d6a7; color: #0d3a16;")
+        export_btn.setFixedWidth(250)
+        export_btn.setStyleSheet("background-color: #43a047; color: #0d3a16;")
         export_btn.setToolTip(self.T['export_tooltip'])
         export_btn.clicked.connect(self.export_secure_config)
 
         import_btn = QPushButton(self.T['import_title'])
         import_btn.setIcon(QIcon.fromTheme("document-open"))
-        import_btn.setStyleSheet("background-color: #bbdefb; color: #0d47a1;")
+        import_btn.setFixedWidth(250)
+        import_btn.setStyleSheet("background-color: #42a5f5; color: #0d47a1;")
         import_btn.setToolTip(self.T['import_tooltip'])
         import_btn.clicked.connect(self.import_secure_config)
 
+        user_row = QHBoxLayout()
+        user_row.addWidget(self.user_input)
+        user_row.addSpacing(5)
+        user_row.addWidget(export_btn)
+
+        pass_row = QHBoxLayout()
+        pass_row.addWidget(self.pass_input)
+        pass_row.addSpacing(5)
+        pass_row.addWidget(import_btn)
+
         btn_row = QHBoxLayout()
-        btn_row.addWidget(add_btn)
         btn_row.addWidget(reset_btn)
-        btn_row.addStretch()
-        btn_row.addWidget(export_btn)
-        btn_row.addWidget(import_btn)
+        btn_row.addWidget(add_btn)
+        btn_row.addSpacing(5)
+        btn_row.addWidget(self.unmounter_btn)
 
         self.list_widget = QListWidget()
 
@@ -132,8 +154,8 @@ class MountManager(QWidget):
         layout.addLayout(url_h)
         layout.addLayout(path_h)
         layout.addLayout(smb_h)
-        layout.addWidget(self.user_input)
-        layout.addWidget(self.pass_input)
+        layout.addLayout(user_row)
+        layout.addLayout(pass_row)
         layout.addLayout(btn_row)
         layout.addWidget(self.list_widget)
 
@@ -163,8 +185,86 @@ class MountManager(QWidget):
         self.url_input.textChanged.connect(self.on_url_changed)
 
         self.setLayout(layout)
+        self.remove_oldsmbunmount_service()
         self.create_autostart_service()
         self.create_smbunmount_service()
+        self.enable_reordering_features()
+
+    def enable_reordering_features(self):
+        self.list_widget.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.list_widget.model().rowsMoved.connect(self.save_current_order)
+
+        self.list_widget.setStyleSheet("""
+QListWidget::item {
+    border: 1px solid transparent;
+    padding: 5px;
+}
+
+QListWidget::item:selected {
+    border: 2px solid;
+    background-color: transparent;
+}
+
+QListWidget::item:hover {
+    border: 1px solid;
+    background-color: transparent;
+}
+        """)
+
+    def save_current_order(self):
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            widget = self.list_widget.itemWidget(item)
+            if widget:
+                labels = widget.findChildren(QLabel)
+                path = ""
+                url = ""
+                for label in labels:
+                    text = label.text()
+                    if text.startswith("smb://") or text.startswith("ftp://") or text.startswith("sftp://"):
+                        url = text
+                    elif text.startswith("/"):
+                        path = text
+
+                for mount in self.mounts:
+                    if mount['path'] == path and mount['url'] == url:
+                        mount['order'] = i
+                        break
+
+        self.save_config()
+        self.refresh_with_loading()
+        self.regenerate_bookmarks_from_active_mounts()
+
+    def is_unmounter_running(self):
+        try:
+            user = getpass.getuser()
+            result = subprocess.run(
+                ["ps", "-u", user, "-o", "pid,cmd"],
+                stdout=subprocess.PIPE,
+                text=True
+            )
+            for line in result.stdout.splitlines():
+                if "net_unmounter.py" in line and "python3" in line:
+                    return True
+            return False
+        except Exception:
+            return False
+
+    def update_unmounter_button(self):
+        if self.is_unmounter_running():
+            self.unmounter_btn.setText("🟢 " + self.T["stop_unmounter"])
+        else:
+            self.unmounter_btn.setText("🛑 " + self.T["start_unmounter"])
+
+    def toggle_unmounter(self):
+        if self.is_unmounter_running():
+            subprocess.run(["pkill", "-f", "net_unmounter.py"])
+        else:
+            env = os.environ.copy()
+            env["NETMOUNT_PW"] = self.admin_password
+            subprocess.Popen(["python3", SMBUNMOUNT_EXEC], env=env)
+
+        QTimer.singleShot(1000, self.update_unmounter_button)
 
     def reset_fields(self):
         self.url_input.clear()
@@ -209,15 +309,33 @@ class MountManager(QWidget):
             self.pass_input.setStyleSheet("")
             self.pass_input.setPlaceholderText(self.T['password'])
 
+
     def load_config(self):
         try:
             self.mounts = decrypt(self.admin_password)
+
+            if not isinstance(self.mounts, list):
+                raise ValueError("Konfigurációs adat nem lista típusú.")
+
+            updated = False
+
+            for i, mount in enumerate(self.mounts):
+                if 'order' not in mount:
+                    mount['order'] = i
+                    updated = True
+
+            self.mounts.sort(key=lambda x: x.get('order', 0))
+
+            if updated:
+                self.save_config()
+
         except ValueError:
             QMessageBox.critical(self, self.T['error'], self.T['invalid_config'])
             self.mounts = []
         except Exception as e:
             QMessageBox.critical(self, self.T['error'], self.T['config_load_failed'].format(str(e)))
             self.mounts = []
+
 
     def save_config(self):
         try:
@@ -228,17 +346,25 @@ class MountManager(QWidget):
     def refresh_list(self):
         self.list_widget.clear()
         self.smb_check_threads = []
+        self.mounts.sort(key=lambda x: x.get('order', 0))
 
         for i, mount in enumerate(self.mounts):
             try:
                 url = mount.get('url', '')
                 path = mount.get('path', '')
+                order = mount.get('order', 0)
                 if not url or not path:
                     continue
+
+                label_order = QLabel(f"[{order}]")
+                label_order.setFixedWidth(40)
 
                 item = QListWidgetItem()
                 widget = QWidget()
                 h = QHBoxLayout()
+
+                label_order = QLabel(f"[{order}]")
+                label_order.setFixedWidth(40)
 
                 checkbox = QCheckBox()
                 checkbox.setChecked(mount.get('automount', False))
@@ -250,9 +376,16 @@ class MountManager(QWidget):
                 else:
                     checkbox.stateChanged.connect(lambda state, idx=i: self.toggle_automount(idx, state))
 
-                info = QLabel(f"{path} ← {url}")
-                info.setMinimumWidth(300)
-                info.setStyleSheet("QLabel { padding-left: 5px; }")
+                label_url = QLabel(f"{url}")
+                label_url.setStyleSheet("QLabel { padding-left: 5px; }")
+                label_url.setMinimumWidth(130)
+
+                label_arrow = QLabel(f"←")
+                label_arrow.setFixedWidth(40)
+                label_arrow.setStyleSheet("QLabel { padding-left: 5px; padding-right: 5px;}")
+
+                label_path = QLabel(f"{path}")
+                label_path.setMinimumWidth(130)
 
                 mount_btn = QPushButton(self.T['mount'] if not self.is_mounted(path) else self.T['unmount'])
                 mount_btn.setFixedWidth(120)
@@ -268,8 +401,11 @@ class MountManager(QWidget):
                 del_btn.setIcon(QIcon.fromTheme("edit-delete"))
                 del_btn.clicked.connect(lambda _, idx=i: self.remove_mount(idx))
 
+                h.addWidget(label_order)
                 h.addWidget(checkbox)
-                h.addWidget(info)
+                h.addWidget(label_url)
+                h.addWidget(label_arrow)
+                h.addWidget(label_path)
                 h.addStretch()
                 h.addWidget(mount_btn)
                 h.addWidget(edit_btn)
@@ -458,13 +594,10 @@ class MountManager(QWidget):
                     if not self.run_with_sudo(["umount", path]):
                         self.refresh_with_loading()
                         return
-                    else:
-                        self.remove_place(os.path.basename(path))
                 else:
                     try:
                         QTimer.singleShot(100, self.refresh_with_loading)
                         subprocess.run(["fusermount", "-u", path], check=True)
-                        self.remove_place(os.path.basename(path))
                         self.refresh_with_loading()
                     except subprocess.CalledProcessError as e:
                         QMessageBox.critical(self, self.T['error'], self.T['admin_error'].format(str(e)))
@@ -486,6 +619,7 @@ class MountManager(QWidget):
 
                 button.setText(self.T['unmount'])
                 self.refresh_with_loading()
+                self.regenerate_bookmarks_from_active_mounts()
 
             else:
                 try:
@@ -546,13 +680,16 @@ class MountManager(QWidget):
                 self.refresh_with_loading()
                 return
 
+            max_order = max((m.get('order', 0) for m in self.mounts), default=-1)
+
             entry = {
                 'url': url,
                 'path': full_path,
                 'smb_version': smb_version_number,
                 'user': self.user_input.text(),
                 'password': self.pass_input.text(),
-                'automount': False
+                'automount': False,
+                'order': max_order + 1
             }
 
             self.mounts.append(entry)
@@ -577,14 +714,10 @@ class MountManager(QWidget):
                     if not self.run_with_sudo(["umount", path]):
                         self.refresh_with_loading()
                         return
-                    else:
-                        self.remove_place(os.path.basename(path))
                 else:
                     if not self.run_with_sudo(["fusermount", "-u", path]):
                         self.refresh_with_loading()
                         return
-                    else:
-                        self.remove_place(os.path.basename(path))
 
             if os.path.exists(path) and not os.path.ismount(path):
                 try:
@@ -605,6 +738,7 @@ class MountManager(QWidget):
             self.pass_input.setText(mount['password'])
 
             self.refresh_with_loading()
+            self.regenerate_bookmarks_from_active_mounts()
 
         except IndexError:
             QMessageBox.critical(self, self.T['error'], self.T['invalid_index'])
@@ -616,6 +750,17 @@ class MountManager(QWidget):
         try:
             mount = self.mounts[index]
             path = mount['path']
+            url = mount.get('url', '')
+
+            confirm = QMessageBox.question(
+                self,
+                self.T['remove_confirm_title'],
+                self.T['remove_confirm_text'].format(path=path),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if confirm != QMessageBox.StandardButton.Yes:
+                return
+
             is_smb = mount['url'].startswith("smb://")
             is_ftp = mount['url'].startswith("ftp://")
 
@@ -624,14 +769,10 @@ class MountManager(QWidget):
                     if not self.run_with_sudo(["umount", path]):
                         self.refresh_with_loading()
                         return
-                    else:
-                        self.remove_place(os.path.basename(path))
                 else:
                     if not self.run_with_sudo(["fusermount", "-u", path]):
                         self.refresh_with_loading()
                         return
-                    else:
-                        self.remove_place(os.path.basename(path))
 
             if os.path.exists(path) and not os.path.ismount(path):
                 try:
@@ -651,12 +792,19 @@ class MountManager(QWidget):
                 self.refresh_with_loading()
                 return
 
+            self.reassign_orders()
             self.refresh_with_loading()
+            self.regenerate_bookmarks_from_active_mounts()
 
         except IndexError:
             QMessageBox.critical(self, self.T['error'], self.T['invalid_index'])
         except Exception as e:
             QMessageBox.critical(self, self.T['error'], f"{self.T['remove_failed']}\n\n{str(e)}")
+
+    def reassign_orders(self):
+        for idx, mount in enumerate(self.mounts):
+            mount["order"] = idx
+        self.save_config()
 
     def is_mounted(self, path):
         return os.path.ismount(path)
@@ -681,55 +829,46 @@ class MountManager(QWidget):
         pretty = reparsed.toprettyxml(indent="  ")
         return '\n'.join([line for line in pretty.split('\n') if line.strip()])
 
-    def add_place(self, title, path, icon="folder", category="mounts"):
-        full_title = "MNT-" + title
+    def regenerate_bookmarks_from_active_mounts(self):
         if not os.path.exists(XBEL_FILE):
-            root = ET.Element("xbel", version="1.0")
-            tree = ET.ElementTree(root)
-        else:
-            tree = ET.parse(XBEL_FILE)
-            root = tree.getroot()
+            return
 
+        tree = ET.parse(XBEL_FILE)
+        root = tree.getroot()
+
+        to_remove = []
         for bookmark in root.findall("bookmark"):
-            if bookmark.find("title") is not None and bookmark.find("title").text == full_title:
-                return
+            title_elem = bookmark.find("title")
+            if title_elem is not None and title_elem.text and title_elem.text.startswith("MNT-"):
+                to_remove.append(bookmark)
 
-        unique_id = f"{int(time.time())}/0"
-        bm = ET.Element("bookmark", href=f"file://{path}")
-        ET.SubElement(bm, "title").text = full_title
-        info = ET.SubElement(bm, "info")
-        metadata = ET.SubElement(info, "metadata", owner="http://freedesktop.org")
-        ET.SubElement(metadata, f"{{{BOOKMARK_NS}}}icon", name=icon)
-        metadata_kde = ET.SubElement(info, "metadata", owner="http://www.kde.org")
-        ET.SubElement(metadata_kde, "ID").text = unique_id
-        ET.SubElement(metadata_kde, "isSystemItem").text = "false"
-        ET.SubElement(bm, f"{{{BOOKMARK_NS}}}category").text = category
-        ET.SubElement(bm, f"{{{BOOKMARK_NS}}}position").text = "0"
+        for bm in to_remove:
+            root.remove(bm)
 
-        root.append(bm)
+        for mount in sorted(self.mounts, key=lambda m: m.get("order", 0)):
+            url = mount.get("url", "")
+            path = mount.get("path", "")
+            if self.is_mounted(path):
+                title = path.split('/')[-1]
+                full_title = "MNT-" + title
+                unique_id = f"{int(time.time())}/0"
+
+                bm = ET.Element("bookmark", href=f"file://{path}")
+                ET.SubElement(bm, "title").text = full_title
+                info = ET.SubElement(bm, "info")
+                metadata = ET.SubElement(info, "metadata", owner="http://freedesktop.org")
+                ET.SubElement(metadata, f"{{{BOOKMARK_NS}}}icon", name="folder")
+                metadata_kde = ET.SubElement(info, "metadata", owner="http://www.kde.org")
+                ET.SubElement(metadata_kde, "ID").text = unique_id
+                ET.SubElement(metadata_kde, "isSystemItem").text = "false"
+                ET.SubElement(bm, f"{{{BOOKMARK_NS}}}category").text = "mounts"
+                ET.SubElement(bm, f"{{{BOOKMARK_NS}}}position").text = "0"
+
+                root.append(bm)
 
         pretty_xml = self.prettify(root)
         with open(XBEL_FILE, "w", encoding="utf-8") as f:
             f.write(pretty_xml)
-
-    def remove_place(self, title):
-        if not os.path.exists(XBEL_FILE):
-            return
-
-        full_title = "MNT-" + title
-        tree = ET.parse(XBEL_FILE)
-        root = tree.getroot()
-        removed = False
-
-        for bookmark in root.findall("bookmark"):
-            title_el = bookmark.find("title")
-            if title_el is not None and title_el.text == full_title:
-                root.remove(bookmark)
-                removed = True
-                break
-
-        if removed:
-            tree.write(XBEL_FILE, encoding="utf-8", xml_declaration=True)
 
     def mount_entry(self, entry):
         try:
@@ -767,7 +906,6 @@ class MountManager(QWidget):
                             "-p", port,
                             "-o", f"IdentityFile={key_path},uid={uid},gid={gid},StrictHostKeyChecking=no"
                         ], check=True)
-                        self.add_place(os.path.basename(entry['path']), entry['path'], icon="network-server", category="mounts")
                     except Exception as e:
                         QMessageBox.critical(self, self.T['error'], f"{self.T['sftp_mount_failed']}\n\n{str(e)}")
 
@@ -801,10 +939,8 @@ class MountManager(QWidget):
                     if not self.run_with_sudo(cmd):
                         QMessageBox.critical(self, self.T['error'], f"{self.T['admin_error']}\n{self.T['mount_failed']}")
                         return
-                    self.add_place(os.path.basename(entry['path']), entry['path'], icon="network-server", category="mounts")
                 else:
                     subprocess.run(cmd, check=True)
-                    self.add_place(os.path.basename(entry['path']), entry['path'], icon="network-server", category="mounts")
             except Exception as e:
                 QMessageBox.critical(self, self.T['error'], self.T['admin_error'].format(str(e)))
                 return
@@ -815,6 +951,7 @@ class MountManager(QWidget):
                 QMessageBox.information(self, self.T['error'], self.T['unmount_success'])
 
             self.refresh_with_loading()
+            self.regenerate_bookmarks_from_active_mounts()
 
         except Exception as e:
             QMessageBox.critical(self, self.T['error'], f"{self.T['mount_failed']}\n\n{str(e)}")
@@ -837,52 +974,63 @@ class MountManager(QWidget):
 
     def create_autostart_service(self):
         try:
-            if not os.path.exists(AUTOMOUNT_SCRIPT):
-                os.makedirs(os.path.dirname(AUTOMOUNT_SCRIPT), exist_ok=True)
-                with open(AUTOMOUNT_SCRIPT, 'w') as f:
-                    f.write(f"""[Desktop Entry]
+            expected_content = f"""[Desktop Entry]
 Type=Application
-Name={self.T['title']}
+Name={self.T['title']} - {self.T['automount']}
 Exec=/usr/bin/python3 {AUTOMOUNT_EXEC}
 Icon={icon_path}
 Hidden=false
 X-GNOME-Autostart-enabled=true
 Comment={self.T['automount_comment']}
-    """)
+"""
+
+            regenerate = True
+            if os.path.exists(AUTOMOUNT_SCRIPT):
+                with open(AUTOMOUNT_SCRIPT, "r", encoding="utf-8") as f:
+                    existing = f.read()
+                if existing.strip() == expected_content.strip():
+                    regenerate = False
+
+            if regenerate:
+                os.makedirs(os.path.dirname(AUTOMOUNT_SCRIPT), exist_ok=True)
+                with open(AUTOMOUNT_SCRIPT, 'w', encoding="utf-8") as f:
+                    f.write(expected_content)
 
         except Exception as e:
             QMessageBox.critical(self, self.T['error'], f"{self.T['autostart_write_failed']}\n\n{str(e)}")
 
     def create_smbunmount_service(self):
         try:
-            if not os.path.exists(SMBUNMOUNT_SCRIPT):
+            expected_content = f"""[Desktop Entry]
+Type=Application
+Name={self.T['title']} - {self.T['autounmount']}
+Exec=/usr/bin/python3 {SMBUNMOUNT_EXEC}
+Icon={icon_path}
+Hidden=false
+X-GNOME-Autostart-enabled=true
+Comment={self.T['autounmount_comment']}
+"""
+
+            regenerate = True
+            if os.path.exists(SMBUNMOUNT_SCRIPT):
+                with open(SMBUNMOUNT_SCRIPT, "r") as f:
+                    existing = f.read()
+                    if existing.strip() == expected_content.strip():
+                        regenerate = False
+
+            if regenerate:
                 os.makedirs(os.path.dirname(SMBUNMOUNT_SCRIPT), exist_ok=True)
-                with open(SMBUNMOUNT_SCRIPT, 'w') as f:
-                    f.write(f"""[Unit]
-Description={self.T['autounmount_comment']}
-After=graphical-session.target network-online.target
-Wants=graphical-session.target network-online.target
-
-[Service]
-Type=simple
-ExecStart=/usr/bin/python3 {SMBUNMOUNT_EXEC}
-Restart=always
-RestartSec=5
-Environment=DISPLAY=:0
-Environment=XAUTHORITY=%h/.Xauthority
-ExecStartPre=/bin/sleep 15
-
-[Install]
-WantedBy=default.target
-
-    """)
-
-                # ✅ Csak akkor indul újra a service, ha új fájl készült
-                subprocess.run(["systemctl", "--user", "daemon-reexec"], check=True)
-                subprocess.run(["systemctl", "--user", "enable", "--now", "smb-unmount.service"], check=True)
+                with open(SMBUNMOUNT_SCRIPT, "w") as f:
+                    f.write(expected_content)
 
         except Exception as e:
             QMessageBox.critical(self, self.T['error'], f"{self.T['smb_unmount_write_failed']}\n\n{str(e)}")
+
+    def remove_oldsmbunmount_service(self):
+        if os.path.exists(SMBUNMOUNT_SCRIPT_OLD):
+            subprocess.run(["systemctl", "--user", "disable", "--now", "smb-unmount.service"], check=False)
+            os.remove(SMBUNMOUNT_SCRIPT_OLD)
+            subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
 
 class KeySetupWizard(QDialog):
     def __init__(self, entry, lang_data, parent=None):
