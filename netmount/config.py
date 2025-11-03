@@ -17,6 +17,7 @@ icon_path = ICON_DIR / "netmount_icon.png"
 lang_file = LANG_DIR / "main.json"
 lang_file_am = LANG_DIR / "auto_mount.json"
 lang_file_un = LANG_DIR / "net_unmounter.json"
+lang_file_pw = LANG_DIR / "password_prompt.json"
 
 # 🗂️ Konfigurációs fájl
 SECURE_FILE = DATA_DIR / ".net_mounts.secure"
@@ -29,9 +30,9 @@ ET.register_namespace("bookmark", BOOKMARK_NS)
 # 🚀 Automatikus indulási fájlok
 AUTOMOUNT_SCRIPT = Path.home() / ".config/autostart/net-automounts.desktop"
 AUTOMOUNT_EXEC = BASE_DIR / "netmount/auto_mount.py"
-SMBUNMOUNT_SCRIPT = Path.home() / ".config/autostart/net_unmounter.desktop"
 SMBUNMOUNT_EXEC = BASE_DIR / "netmount/net_unmounter.py"
 
+SMBUNMOUNT_SCRIPT_D_OLD = Path.home() / ".config/autostart/net_unmounter.desktop"
 SMBUNMOUNT_SCRIPT_OLD = Path.home() / ".config/systemd/user/smb-unmount.service"
 
 # 💡 Egyéb

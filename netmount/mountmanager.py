@@ -30,8 +30,19 @@ from netmount.decryptor import decrypt, encrypt
 
 from netmount.config import (
     XBEL_FILE, BOOKMARK_NS, SECURE_FILE, AUTOMOUNT_SCRIPT,
-    SMBUNMOUNT_SCRIPT, SMBUNMOUNT_SCRIPT_OLD, AUTOMOUNT_EXEC, SMBUNMOUNT_EXEC, icon_path
+    SMBUNMOUNT_SCRIPT_OLD, SMBUNMOUNT_SCRIPT_D_OLD,
+    AUTOMOUNT_EXEC, SMBUNMOUNT_EXEC, icon_path
 )
+
+def is_local_network_up() -> bool:
+    try:
+        result = subprocess.run(
+            'ip -o addr show up | grep -v " lo " | grep -qE "inet(6)? "',
+            shell=True
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
 
 class LoadingDialog(QDialog):
     def __init__(self, T, parent=None):
@@ -52,6 +63,7 @@ class LoadingDialog(QDialog):
 class MountManager(QWidget):
     def __init__(self, T, admin_password):
         super().__init__()
+        self.network_up = is_local_network_up()
         self.T = T
         self.admin_password = admin_password
         self.setWindowTitle(self.T['title'])
@@ -185,9 +197,8 @@ class MountManager(QWidget):
         self.url_input.textChanged.connect(self.on_url_changed)
 
         self.setLayout(layout)
-        self.remove_oldsmbunmount_service()
+        self.remove_old_services()
         self.create_autostart_service()
-        self.create_smbunmount_service()
         self.enable_reordering_features()
 
     def enable_reordering_features(self):
@@ -353,6 +364,7 @@ QListWidget::item:hover {
                 url = mount.get('url', '')
                 path = mount.get('path', '')
                 order = mount.get('order', 0)
+                last_known_status = mount.get('last_known_status', 'unknown')
                 if not url or not path:
                     continue
 
@@ -370,7 +382,7 @@ QListWidget::item:hover {
                 checkbox.setChecked(mount.get('automount', False))
                 checkbox.setToolTip(self.T['automount'])
 
-                if not self.is_mounted(path):
+                if not self.is_mounted(path) or not self.network_up:
                     checkbox.setEnabled(False)
                     checkbox.setToolTip(self.T['automount_disabled_not_mounted'])
                 else:
@@ -422,7 +434,11 @@ QListWidget::item:hover {
                 mount_btn.setIcon(QIcon.fromTheme("network-wired"))
                 mount_btn.setStyleSheet("background-color: #e8f5e9; color: #1b5e20;")
 
-                if self.is_mounted(mount['path']):
+                if not self.network_up:
+                    mount_btn.setEnabled(False)
+                    mount_btn.setToolTip(self.T['network_unavailable_tooltip'])
+
+                elif self.is_mounted(mount['path']):
                     mount_btn.setIcon(QIcon.fromTheme("network-connect"))
                     mount_btn.setStyleSheet("background-color: #43a047; color: white;")
 
@@ -460,7 +476,7 @@ QListWidget::item:hover {
         if not path:
             return
         try:
-            encrypt(self.admin_password, self.mounts, Path(path))
+            encrypt(self.admin_password, self.mounts)
             QMessageBox.information(self, self.T['success'], self.T['export_success'].format(path))
         except Exception as e:
             QMessageBox.critical(self, self.T['error'], self.T['export_failed'].format(str(e)))
@@ -479,11 +495,11 @@ QListWidget::item:hover {
         text, ok = QInputDialog.getText(
             self,
             self.T['admin_password_title'],
-            self.T['admin_password_text_old'],
+            self.T['admin_password_text'],
             QLineEdit.EchoMode.Password
         )
         if not ok or not text:
-            QMessageBox.warning(self, self.T['error'], self.T['admin_password_required_old'])
+            QMessageBox.warning(self, self.T['error'], self.T['admin_password_required'])
             return
 
         try:
@@ -554,11 +570,19 @@ QListWidget::item:hover {
             )
             return False
 
-    def is_host_reachable(self, host: str, port: int = 445, timeout: float = 2.0) -> bool:
-        try:
-            with socket.create_connection((host, port), timeout=timeout):
-                return True
-        except Exception:
+    def is_host_reachable(self, host: str, port: int = 445, attempts: int = 2, timeout: float = 0.5, max_total_time: float = 1.0) -> bool:
+        if self.network_up:
+            start_time = time.time()
+            for attempt in range(attempts):
+                try:
+                    with socket.create_connection((host, port), timeout=timeout):
+                        return True
+                except Exception:
+                    if time.time() - start_time > max_total_time:
+                        break
+                    continue
+            return False
+        else:
             return False
 
     def toggle_automount(self, index, state):
@@ -606,6 +630,7 @@ QListWidget::item:hover {
                 QMessageBox.information(self, self.T['success'], self.T['unmount_success'])
 
                 self.mounts[index]['automount'] = False
+                self.mounts[index]["last_known_status"] = "unmounted"
                 self.save_config()
 
                 try:
@@ -629,7 +654,9 @@ QListWidget::item:hover {
                 except Exception as e:
                     QMessageBox.critical(self, self.T['error'], self.T['admin_error'].format(str(e)))
                     return
-
+                self.mounts[index]['automount'] = True
+                self.mounts[index]["last_known_status"] = "mounted"
+                self.save_config()
                 self.mount_entry(mount)
         except Exception as e:
             QMessageBox.critical(self, self.T['error'], f"{self.T['mount']}/{self.T['mount_failed']}\n\n{str(e)}")
@@ -689,7 +716,8 @@ QListWidget::item:hover {
                 'user': self.user_input.text(),
                 'password': self.pass_input.text(),
                 'automount': False,
-                'order': max_order + 1
+                'order': max_order + 1,
+                'last_known_status': 'unknown'
             }
 
             self.mounts.append(entry)
@@ -715,19 +743,32 @@ QListWidget::item:hover {
                         self.refresh_with_loading()
                         return
                 else:
-                    if not self.run_with_sudo(["fusermount", "-u", path]):
+                    try:
+                        subprocess.run(["fusermount", "-u", path], check=True)
+                        self.refresh_with_loading
+                        return
+                    except Exception:
+                        return
+
+            if self.network_up:
+                if os.path.exists(path) and not os.path.ismount(path):
+                    try:
+                        shutil.rmtree(path)
+                    except Exception as e:
+                        QMessageBox.warning(self, self.T['error'], self.T['delete_dir_failed'].format(str(e)))
+                        self.refresh_with_loading()
+                        return
+            else:
+                if os.path.exists(path):
+                    try:
+                        shutil.rmtree(path)
+                    except Exception as e:
+                        QMessageBox.warning(self, self.T['error'], self.T['delete_dir_failed'].format(str(e)))
                         self.refresh_with_loading()
                         return
 
-            if os.path.exists(path) and not os.path.ismount(path):
-                try:
-                    shutil.rmtree(path)
-                except Exception as e:
-                    QMessageBox.warning(self, self.T['error'], self.T['delete_dir_failed'].format(str(e)))
-                    self.refresh_with_loading()
-                    return
-
             mount['automount'] = False
+            mount["last_known_status"] = "unmounted"
             del self.mounts[index]
             self.save_config()
 
@@ -770,19 +811,33 @@ QListWidget::item:hover {
                         self.refresh_with_loading()
                         return
                 else:
-                    if not self.run_with_sudo(["fusermount", "-u", path]):
+                    try:
+                        subprocess.run(["fusermount", "-u", path], check=True)
+                        self.refresh_with_loading
+                        return
+                    except Exception:
+                        return
+
+            if self.network_up:
+                if os.path.exists(path) and not os.path.ismount(path):
+                    try:
+                        shutil.rmtree(path)
+                    except Exception as e:
+                        QMessageBox.warning(self, self.T['error'], self.T['delete_dir_failed'].format(str(e)))
+                        self.refresh_with_loading()
+                        return
+            else:
+                if os.path.exists(path):
+                    try:
+                        shutil.rmtree(path)
+                    except Exception as e:
+                        QMessageBox.warning(self, self.T['error'], self.T['delete_dir_failed'].format(str(e)))
                         self.refresh_with_loading()
                         return
 
-            if os.path.exists(path) and not os.path.ismount(path):
-                try:
-                    shutil.rmtree(path)
-                except Exception as e:
-                    QMessageBox.warning(self, self.T['error'], self.T['delete_dir_failed'].format(str(e)))
-                    self.refresh_with_loading()
-                    return
-
             mount['automount'] = False
+            mount["last_known_status"] = "unmounted"
+
             del self.mounts[index]
 
             try:
@@ -807,7 +862,10 @@ QListWidget::item:hover {
         self.save_config()
 
     def is_mounted(self, path):
-        return os.path.ismount(path)
+        if not self.network_up:
+            return False
+        else:
+            return os.path.ismount(path)
 
     def has_keyfile(self, entry):
         host_port = entry['url'][7:].split('/')[0]
@@ -873,7 +931,7 @@ QListWidget::item:hover {
     def mount_entry(self, entry):
         try:
             if not os.path.exists(entry['path']):
-                if not self.run_with_sudo(["mkdir", "-p", entry['path']]):
+                if not subprocess.run(["mkdir", "-p", entry['path']]):
                     self.refresh_with_loading()
                     return
         except Exception as e:
@@ -886,44 +944,73 @@ QListWidget::item:hover {
 
         try:
             if entry['url'].startswith("sftp://"):
+                sftp_path = entry.get("path", "")
                 def do_sftp_mount():
                     QTimer.singleShot(100, self.refresh_with_loading)
-                    remote = entry['url'][7:]
-                    host_path = remote.split('/', 1)
-                    host = host_path[0]
-                    remote_path = '/' + host_path[1] if len(host_path) > 1 else ''
+                    sftp_user = entry.get("user", "")
+                    sftp_url = entry.get("url", "")
+                    sftp_remote = sftp_url[7:]
+                    sftp_host_path = sftp_remote.split('/', 1)
+                    sftp_host = sftp_host_path[0]
+                    sftp_remote_path = '/' + sftp_host_path[1] if len(sftp_host_path) > 1 else ''
 
-                    if ':' in host:
-                        host, port = host.split(':', 1)
-                    else:
-                        port = '22'
+                    sftp_port = sftp_host.split(':')[1] if ':' in sftp_host else '22'
+                    sftp_host = sftp_host.split(':')[0] if ':' in sftp_host else sftp_host
 
-                    key_path = os.path.expanduser(f"~/.ssh/netmount_keys/id_rsa_{host}_{port}")
+                    sftp_key_path = os.path.expanduser(f"~/.ssh/netmount_keys/id_rsa_{sftp_host}_{sftp_port}")
+
+                    if not sftp_user or not sftp_host or not sftp_remote_path or not sftp_path or not sftp_port or not os.path.exists(sftp_key_path):
+                        QMessageBox.critical(self, self.T['error'], self.T['invalid_data'])
+                        return
 
                     try:
                         subprocess.run([
-                            "sshfs", f"{entry['user']}@{host}:{remote_path}", entry['path'],
-                            "-p", port,
-                            "-o", f"IdentityFile={key_path},uid={uid},gid={gid},StrictHostKeyChecking=no"
+                            "sshfs", f"{sftp_user}@{sftp_host}:{sftp_remote_path}", sftp_path,
+                            "-p", sftp_port,
+                            "-o", f"IdentityFile={sftp_key_path},uid={uid},gid={gid},StrictHostKeyChecking=no"
                         ], check=True)
                     except Exception as e:
                         QMessageBox.critical(self, self.T['error'], f"{self.T['sftp_mount_failed']}\n\n{str(e)}")
 
                 threading.Thread(target=do_sftp_mount, daemon=True).start()
-                self.check_sftp_mount(entry['path'])
+                self.check_sftp_mount(sftp_path)
                 return
 
             elif entry['url'].startswith("ftp://"):
-                ftp_url = self.escape_url_for_protocol(entry['url'], "ftp")
-                ftp_pass = entry['password']
+                ftp_path = entry.get("path", "")
+                ftp_url = entry.get("url", "")
+                ftp_url = self.escape_url_for_protocol(ftp_url, "ftp")
+                ftp_user = entry.get("user", "")
+                ftp_password = entry.get("password", "")
+                ftp_remote = ftp_url[6:]
+                ftp_host_path = ftp_remote.split('/', 1)
+                ftp_host = ftp_host_path[0]
+
+                ftp_port = ftp_host.split(':')[1] if ':' in ftp_host else '21'
+                ftp_host = ftp_host.split(':')[0] if ':' in ftp_host else ftp_host
+                full_ftp_host = f"{ftp_host}:{ftp_port}" if ftp_port != "21" else ftp_host
+
+                if not ftp_host or not ftp_path or not ftp_user or not ftp_password or not ftp_port:
+                    QMessageBox.critical(self, self.T['error'], self.T['invalid_data'])
+                    return
+
                 cmd = [
-                    "curlftpfs", ftp_url, entry['path'], "-o",
-                    f"user={entry['user']}:{ftp_pass},uid={uid},gid={gid}"
+                    "curlftpfs", full_ftp_host, ftp_path,
+                    "-o", f"user={ftp_user}:{ftp_password},uid={uid},gid={gid}"
                 ]
 
             elif entry['url'].startswith("smb://"):
+                smb_url = entry.get("url", "")
+                smb_path = entry.get("path", "")
+                smb_user = entry.get("user", "")
+                smb_password = entry.get("password", "")
                 vers_opt = f",vers={entry['smb_version']}" if entry.get('smb_version') else ""
                 unc = "//" + self.escape_url_for_protocol(entry['url'][6:], "smb")
+
+                if not smb_path or not smb_url or not smb_user or not smb_password:
+                    QMessageBox.critical(self, self.T['error'], self.T['invalid_data'])
+                    return
+
                 cmd = [
                     "mount", "-t", "cifs", unc, entry['path'], "-o",
                     f"username={entry['user']},password={entry['password']},uid={uid},gid={gid}{vers_opt}"
@@ -1026,13 +1113,31 @@ Comment={self.T['autounmount_comment']}
         except Exception as e:
             QMessageBox.critical(self, self.T['error'], f"{self.T['smb_unmount_write_failed']}\n\n{str(e)}")
 
-    def remove_oldsmbunmount_service(self):
+    def remove_old_services(self):
         if os.path.exists(SMBUNMOUNT_SCRIPT_OLD):
             subprocess.run(["systemctl", "--user", "disable", "--now", "smb-unmount.service"], check=False)
             os.remove(SMBUNMOUNT_SCRIPT_OLD)
             subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
 
+        if os.path.exists(SMBUNMOUNT_SCRIPT_D_OLD):
+            os.remove(SMBUNMOUNT_SCRIPT_D_OLD)
+
 class KeySetupWizard(QDialog):
+    def _connection_details(self):
+        parsed = urllib.parse.urlparse(self.entry['url'])
+        host = parsed.hostname
+        if not host:
+            raise ValueError(self.lang.get('wizard_invalid_url', '[ERROR] Invalid SFTP URL: missing host.'))
+
+        port = str(parsed.port or 22)
+        username = self.entry.get('user') or parsed.username
+        if not username:
+            raise ValueError(self.lang.get('wizard_missing_user', '[ERROR] Missing username for SSH authentication.'))
+
+        ssh_host = host if ':' not in host else f'[{host}]'
+        safe_host = host.replace(':', '_')
+        return host, port, safe_host, ssh_host, username
+
     def __init__(self, entry, lang_data, parent=None):
         super().__init__(parent)
         self.manager = parent
@@ -1076,9 +1181,16 @@ class KeySetupWizard(QDialog):
             ssh_dir = os.path.expanduser("~/.ssh/netmount_keys")
             os.makedirs(ssh_dir, exist_ok=True)
 
-            host = self.entry['url'][7:].split('/')[0].split(':')[0]
-            port = self.entry['url'][7:].split('/')[0].split(':')[1] if ':' in self.entry['url'] else '22'
-            key_base = f"id_rsa_{host}_{port}"
+            try:
+                host, port, safe_host, _, _ = self._connection_details()
+            except ValueError as error:
+                self.instructions.append(str(error))
+                self.next_btn.setEnabled(True)
+                self.step -= 1
+                return
+
+            key_base = f"id_rsa_{safe_host}_{port}"
+
             key_path = os.path.join(ssh_dir, key_base)
             pubkey_path = key_path + ".pub"
 
@@ -1087,7 +1199,7 @@ class KeySetupWizard(QDialog):
 
             if not Path(pubkey_path).exists():
                 self.instructions.append(self.lang['wizard_generating'])
-                QApplication.processEvents()()
+                QApplication.processEvents()
 
                 try:
                     subprocess.run([
@@ -1105,13 +1217,15 @@ class KeySetupWizard(QDialog):
 
         elif self.step == 2:
             self.instructions.append(self.lang['wizard_step2'])
-            host = self.entry['url'][7:].split('/')[0].split(':')[0]
 
-            host_port = self.entry['url'][7:].split('/')[0]
-            host = host_port.split(':')[0]
-            port = host_port.split(':')[1] if ':' in host_port else '22'
+            try:
+                _, port, _, ssh_host, user = self._connection_details()
+            except ValueError as error:
+                self.instructions.append(str(error))
+                self.step -= 1
+                return
 
-            user = self.entry["user"]
+            ssh_target = f"{user}@{ssh_host}"
             pubkey_path = self.pubkey_path
             marker_file = os.path.expanduser("~/.netmount_result.tmp")
 
@@ -1133,16 +1247,16 @@ class KeySetupWizard(QDialog):
 set -e
 
 # 1. {self.lang['step1']}
-sshpass -p {shlex.quote(pw)} ssh -p {port} -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=no -o ConnectTimeout=5 {user}@{host} "echo '{self.lang['step1_ok']}'" || exit 1
+sshpass -p {shlex.quote(pw)} ssh -p {port} -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=no -o ConnectTimeout=5 {shlex.quote(ssh_target)} "echo '{self.lang['step1_ok']}'" || exit 1
 
 # 2. {self.lang['step2']}
-sshpass -p {shlex.quote(pw)} ssh -p {port} -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=no {user}@{host} "mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo '{self.lang['step2_ok']}'" || exit 1
+sshpass -p {shlex.quote(pw)} ssh -p {port} -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=no {shlex.quote(ssh_target)} "mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo '{self.lang['step2_ok']}'" || exit 1
 
 # 3. {self.lang['step3']}
-sshpass -p {shlex.quote(pw)} scp -P {port} -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=no {shlex.quote(pubkey_path)} {user}@{host}:/tmp/netmount_tmp_key.pub && echo '{self.lang['step3_ok']}' || exit 1
+sshpass -p {shlex.quote(pw)} scp -P {port} -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=no {shlex.quote(pubkey_path)} {shlex.quote(ssh_target + ':/tmp/netmount_tmp_key.pub')} && echo '{self.lang['step3_ok']}' || exit 1
 
 # 4. {self.lang['step4']}
-sshpass -p {shlex.quote(pw)} ssh -p {port} -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=no {user}@{host} '
+sshpass -p {shlex.quote(pw)} ssh -p {port} -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=no {shlex.quote(ssh_target)} '
     touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys &&
     grep -qxF "$(cat /tmp/netmount_tmp_key.pub)" ~/.ssh/authorized_keys || cat /tmp/netmount_tmp_key.pub >> ~/.ssh/authorized_keys;
     rm /tmp/netmount_tmp_key.pub

@@ -15,9 +15,11 @@ from PyQt6.QtWidgets import QApplication, QMessageBox, QInputDialog, QLineEdit
 from PyQt6.QtGui import QIcon
 from PyQt6.QtCore import QLocale, QTimer
 
-from netmount.config import icon_path, lang_file
+from netmount.config import icon_path, lang_file, lang_file_pw
 from netmount.mountmanager import MountManager
 from netmount.mountmanager import LoadingDialog
+
+from netmount.password_prompt import ask_admin_password
 
 LANG = QLocale.system().name().split('_')[0]
 
@@ -35,6 +37,11 @@ fallback_error_msgs = {
 try:
     with open(lang_file, "r", encoding="utf-8") as f:
         LANGS = json.load(f)
+    T = LANGS.get(LANG, LANGS['en'])
+
+    with open(lang_file_pw, "r", encoding="utf-8") as f:
+        PW_LANGS = json.load(f)
+    T_PW = PW_LANGS.get(LANG, PW_LANGS['en'])
 except Exception as e:
     app = QApplication(sys.argv)
     app.setWindowIcon(QIcon(str(icon_path)))
@@ -46,62 +53,12 @@ except Exception as e:
     )
     sys.exit(1)
 
-T = LANGS.get(LANG, LANGS['en'])
-
-def ask_admin_password_global(T):
-    max_tries = 3
-    for attempt in range(max_tries):
-        text, ok = QInputDialog.getText(
-            None,
-            T['admin_password_title'],
-            T['admin_password_text'],
-            QLineEdit.EchoMode.Password
-        )
-        if not ok or not text:
-            QMessageBox.critical(
-                None,
-                T['error'],
-                T['admin_password_required']
-            )
-            sys.exit(1)
-
-        try:
-            proc = subprocess.run(
-                ["sudo", "-S", "whoami"],
-                input=text + "\n",
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            if proc.returncode == 0 and "root" in proc.stdout:
-                return text
-            else:
-                QMessageBox.warning(
-                    None,
-                    T['invalid_password_title'],
-                    T['invalid_password_text']
-                )
-        except Exception as e:
-            QMessageBox.critical(
-                None,
-                T['error'],
-                T['admin_password_error'].format(error=e)
-            )
-            sys.exit(1)
-
-    QMessageBox.critical(
-        None,
-        T['error'],
-        T['admin_password_max_tries']
-    )
-    sys.exit(1)
-
 def main():
     app = QApplication(sys.argv)
     app.setWindowIcon(QIcon(str(icon_path)))
 
     try:
-        admin_pw = ask_admin_password_global(T)
+        admin_pw = os.environ.get("NETMOUNT_PW") or ask_admin_password(T_PW)
 
         loading = LoadingDialog(T)
         loading.show()

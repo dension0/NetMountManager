@@ -2,6 +2,7 @@
 import base64
 import hashlib
 import json
+import fcntl
 from pathlib import Path
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
@@ -13,6 +14,22 @@ from netmount.config import SECURE_FILE
 
 ITERATIONS = 100_000
 ENCODING = "utf-8"
+
+class LockedSecureFile:
+    def __init__(self, file_path: Path, mode: str):
+        self.file_path = file_path
+        self.mode = mode
+        self.file = None
+
+    def __enter__(self):
+        self.file = open(self.file_path, self.mode)
+        fcntl.flock(self.file.fileno(), fcntl.LOCK_EX)
+        return self.file
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.file:
+            fcntl.flock(self.file.fileno(), fcntl.LOCK_UN)
+            self.file.close()
 
 def derive_key(password: str) -> bytes:
     salt = hashlib.md5(password.encode(ENCODING)).digest()
@@ -31,7 +48,7 @@ def encrypt(password: str, data: Any, file_path: Path = SECURE_FILE) -> None:
     json_data = json.dumps(data).encode(ENCODING)
     encrypted = fernet.encrypt(json_data)
     file_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(file_path, "wb") as f:
+    with LockedSecureFile(file_path, "wb") as f:
         f.write(encrypted)
 
 def decrypt(password: str, file_path: Path = SECURE_FILE) -> Any:
@@ -41,7 +58,7 @@ def decrypt(password: str, file_path: Path = SECURE_FILE) -> Any:
 
     key = derive_key(password)
     fernet = Fernet(key)
-    with open(file_path, "rb") as f:
+    with LockedSecureFile(file_path, "rb") as f:
         ciphertext = f.read()
     decrypted_data = fernet.decrypt(ciphertext)
     return json.loads(decrypted_data.decode(ENCODING))

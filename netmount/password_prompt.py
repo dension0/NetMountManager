@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import QInputDialog, QMessageBox, QLineEdit
 
 def ask_admin_password(T, parent=None, log=None):
     if log:
-        log(T["displaying_password_prompt"])
+        log(f"{T['information_log']} {T['displaying_password_prompt']}")
 
     max_tries = 3
     for attempt in range(max_tries):
