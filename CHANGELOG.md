@@ -1,5 +1,19 @@
 # Changelog
 
+## [v1.2.1] – 2025-11-03
+
+### 🛠 Fejlesztések és biztonságosabb működés
+- Új `_connection_details()` segédfüggvény a host, port és user kinyerésére, IPv6-címek biztonságos idézőjelezésével  
+- A kulcstelepítő script generálása egységes SSH/SCP parancs idézőjelezést kapott  
+- A varázsló hibakezelése javítva: hiba esetén visszalép a megfelelő lépésre  
+- Új magyar és angol hibaüzenetek az érvénytelen SFTP-címek és a hiányzó felhasználónév kezeléséhez  
+
+### 🛠 Improvements and safer operation
+- Added new `_connection_details()` helper function to extract host, port, and user from URLs, with proper quoting for IPv6 addresses  
+- Key installer script generation now applies consistent quoting for all SSH/SCP commands  
+- Wizard error handling improved — on failure, it now correctly reverts to the appropriate step  
+- Added new English and Hungarian error messages for invalid SFTP URLs and missing usernames 
+
 ## [v1.2.0] – 2025-07-07
 
 ### 🇭🇺 Funkcióbővítő kiadás – NetMountManager
@@ -55,5 +69,6 @@
 ---
 
 ### 📦 Versions
+- `v1.2.1` – Improvements and safer operation release
 - `v1.2.0` – Feature release
 - `v1.0.1` – Bugfix release
