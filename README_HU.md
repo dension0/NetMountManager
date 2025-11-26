@@ -157,8 +157,8 @@ A titkosított fájl: data/.net_mounts.secure
 
 ## 👤 Szerző
 Készült: Madarász László (@dension)
-Támogatás, hibabejelentés: info@pixellegion.org
-Weboldal: https://pixellegion.org
+Támogatás, hibabejelentés: info@volthost.hu
+Weboldal: https://volthost.hu
 Powered by: ChatGPT
 Weboldal: https://chatgpt.com
 
