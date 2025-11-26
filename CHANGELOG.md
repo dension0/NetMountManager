@@ -1,5 +1,29 @@
 # Changelog
 
+## [v1.2.2] – 2025-11-26
+
+### 🛠 Új funkciók & javítások
+- ✅ Automatikus hiányzó Python-függőségek telepítése indításkor — az auto_mount.py elejére beépített ellenőrző blokk megpróbálja automatikusan telepíteni a szükséges csomagokat (pyqt6, cryptography) pip --user segítségével, ha hiányoznak.
+- 🌐 Automatikus nyelvdetektálás (LC_ALL/LANG) — az üzeneteket a környezet nyelvéhez igazítja (magyar vagy angol).
+- 💬 Kétnyelvű (HU/EN) felhasználói kommunikáció — a dialógusok és a terminál-fallback a felismert nyelven ad visszajelzést.
+- 🧾 Nincs fájl-alapú logolás — a blokk nem ír log fájlba (nem használ /tmp-ot vagy más állandó fájlt), a kimenetet QDialog-on vagy megnyitott terminálon mutatja; ezzel elkerülve a rendszerszemét létrehozását.
+- 🪟 QDialog pip kimenet stream — ha PyQt6 és grafikus környezet elérhető, egy felugró ablakban láthatod a pip futását élőben; siker esetén az ablak automatikusan bezárul, hiba esetén felhasználó bevatkozásig marad.
+- 🖥️ Terminál-fallback — ha nincs PyQt6 vagy más ok miatt nem lehet GUI-t nyitni, a telepítést terminálablakban indítja, amely tartja magát, amíg megnézed a kimenetet.
+- 🔒 Biztonsági viselkedés autostart alatt — ha rootként fut a script, nem próbál --user pip-et futtatni; a rendszercsomag (DNF) telepítést javasolja.
+- ⏱️ Időbélyeg opció (GUI) — lehetőség időbélyegek megjelenítésére a QDialog kimenetében (datetime prefixelés soronként) — beépítve.
+- 🧩 A fentiek biztonságosan integrálva az auto_mount.py indítólogikájába (importok előtt futó blokk), minimalizálva az autostart-környezetben fellépő problémákat.
+
+### 🛠 New features & fixes
+- ✅ Automatic installation of missing Python dependencies at startup — the check block added to the top of auto_mount.py will attempt to automatically install required packages (pyqt6, cryptography) using pip --user when they are missing.
+- 🌐 Automatic language detection (LC_ALL/LANG) — messages are adapted to the environment language (Hungarian or English).
+- 💬 Bilingual (HU/EN) user communication — dialogs and the terminal fallback present feedback in the detected language.
+- 🧾 No file-based logging — the block does not write log files (does not use /tmp or any persistent file); output is shown in a QDialog or an opened terminal window, avoiding creating system clutter.
+- 🪟 QDialog pip output stream — if PyQt6 and a graphical session are available, pip execution is streamed live into a popup window; on success the window closes automatically, on failure it remains until user intervention.
+- 🖥️ Terminal fallback — if PyQt6 is unavailable or GUI cannot be opened, the installer runs in a terminal window which remains open so you can inspect the output.
+- 🔒 Safe autostart behaviour — when the script runs as root, it will not attempt pip --user; it recommends installing system packages via DNF instead.
+- ⏱️ Timestamp option (GUI) — optional per-line timestamps can be shown in the QDialog output (prefixed via datetime) — implemented.
+- 🧩 The above is safely integrated into the auto_mount.py startup logic (the block runs before other imports), minimising issues in autostart environments.
+
 ## [v1.2.1] – 2025-11-03
 
 ### 🛠 Fejlesztések és biztonságosabb működés
@@ -69,6 +93,7 @@
 ---
 
 ### 📦 Versions
+- `v1.2.2` – Auto-installer, bilingual UX, no-file logging
 - `v1.2.1` – Improvements and safer operation release
 - `v1.2.0` – Feature release
 - `v1.0.1` – Bugfix release

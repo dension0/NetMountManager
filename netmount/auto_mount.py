@@ -1,4 +1,177 @@
 #!/usr/bin/env python3
+# --- BEGIN: localized auto-install missing Python deps (improved) ---
+import importlib, sys, os, subprocess, shlex, shutil
+from datetime import datetime
+
+# --- automatic short lang detect (hu or en) ---
+_env_lang = (os.environ.get("LC_ALL") or os.environ.get("LANG") or "en").split(".")[0]
+LANG = _env_lang.split("_")[0] if "_" in _env_lang else _env_lang
+if LANG not in ("hu", "en"):
+    LANG = "en"
+# ---------------------------------------------------------
+
+REQ = [("PyQt6", "pyqt6"), ("cryptography", "cryptography")]
+
+def module_ok(name: str) -> bool:
+    try:
+        importlib.import_module(name)
+        return True
+    except Exception:
+        return False
+
+missing = [pip for mod, pip in REQ if not module_ok(mod)]
+
+MSG = {
+    "en": {
+        "missing": "Missing Python packages required by NetMountManager: {pkgs}",
+        "no_display": "No graphical display detected. Please run the installer manually or use the DNF command below.",
+        "dnf_reco": "sudo dnf install -y python3-cryptography python3-qt6 sshpass curlftpfs fuse-sshfs cifs-utils",
+        "pip_cmd": "python3 -m pip install --user {pkgs}",
+        "no_terminal": "No terminal emulator found to show the installer. Running pip in-process (output may be invisible in autostart).",
+        "install_ok": "Dependencies installed successfully.",
+        "install_fail": "Dependencies installation failed. Please inspect the output.",
+        "dialog_title": "NetMountManager — Installer",
+        "close_btn": "Close",
+        "press_enter": "Press ENTER to close..."
+    },
+    "hu": {
+        "missing": "Hiányzó Python csomagok a NetMountManager számára: {pkgs}",
+        "no_display": "Nem található grafikus kijelző. Telepítsd kézzel vagy használd az alábbi DNF parancsot.",
+        "dnf_reco": "sudo dnf install -y python3-cryptography python3-qt6 sshpass curlftpfs fuse-sshfs cifs-utils",
+        "pip_cmd": "python3 -m pip install --user {pkgs}",
+        "no_terminal": "Nem található terminálemulátor a telepítő megjelenítéséhez. A pip in-process fut (autostart alatt nem biztos, hogy látható).",
+        "install_ok": "A függőségek sikeresen telepítve.",
+        "install_fail": "A függőségek telepítése sikertelen. Nézd meg a kimenetet.",
+        "dialog_title": "NetMountManager — Telepítő",
+        "close_btn": "Bezárás",
+        "press_enter": "Nyomj Entert a bezáráshoz..."
+    }
+}[LANG]
+
+if not missing:
+    pass
+else:
+    pkgs_str = " ".join(missing)
+
+    if os.geteuid() == 0:
+        sys.stderr.write(MSG["missing"].format(pkgs=pkgs_str) + "\n")
+        sys.stderr.write(MSG["dnf_reco"] + "\n")
+        sys.exit(1)
+
+    # If PyQt6 is available -> show QDialog and stream pip output into it
+    if module_ok("PyQt6"):
+        from PyQt6.QtWidgets import QApplication, QDialog, QVBoxLayout, QTextEdit, QPushButton, QLabel
+        from PyQt6.QtCore import QProcess, QTimer
+
+        app = QApplication.instance() or QApplication([])
+
+        dlg = QDialog()
+        dlg.setWindowTitle(MSG["dialog_title"])
+        dlg.resize(780, 480)
+        layout = QVBoxLayout(dlg)
+
+        header = QLabel(MSG["missing"].format(pkgs=pkgs_str))
+        header.setWordWrap(True)
+        layout.addWidget(header)
+
+        out = QTextEdit(readOnly=True)
+        out.setAcceptRichText(False)
+        layout.addWidget(out)
+
+        btn_close = QPushButton(MSG["close_btn"])
+        btn_close.setEnabled(False)
+        btn_close.clicked.connect(dlg.accept)
+        layout.addWidget(btn_close)
+
+        proc = QProcess(dlg)
+
+        def append_stdout():
+            data = proc.readAllStandardOutput().data().decode(errors="replace")
+            if data:
+                for line in data.splitlines(True):
+                    ts = datetime.now().strftime("[%H:%M:%S] ")
+                    out.moveCursor(out.textCursor().End)
+                    out.insertPlainText(ts + line)
+                out.ensureCursorVisible()
+
+        def append_stderr():
+            data = proc.readAllStandardError().data().decode(errors="replace")
+            if data:
+                for line in data.splitlines(True):
+                    ts = datetime.now().strftime("[%H:%M:%S] ")
+                    out.moveCursor(out.textCursor().End)
+                    out.insertPlainText(ts + line)
+                out.ensureCursorVisible()
+
+        proc.readyReadStandardOutput.connect(append_stdout)
+        proc.readyReadStandardError.connect(append_stderr)
+
+        def finished(code, status):
+            if code == 0:
+                out.append("\n=== " + MSG["install_ok"] + " ===\n")
+                QTimer.singleShot(1200, dlg.accept)
+            else:
+                out.append("\n=== " + MSG["install_fail"] + " ===\n")
+                btn_close.setEnabled(True)
+
+        proc.finished.connect(finished)
+
+        cmd = [sys.executable, "-m", "pip", "install", "--user"] + missing
+        out.append("Running: " + shlex.join(cmd) + "\n\n")
+        proc.start(cmd[0], cmd[1:])
+        dlg.exec()
+
+        still_missing = [pip for mod, pip in REQ if not module_ok(mod)]
+        if still_missing:
+            sys.stderr.write(MSG["missing"].format(pkgs=" ".join(still_missing)) + "\n")
+            sys.stderr.write(MSG["dnf_reco"] + "\n")
+            sys.exit(1)
+
+    else:
+        has_display = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+        if not has_display:
+            sys.stderr.write(MSG["missing"].format(pkgs=pkgs_str) + "\n")
+            sys.stderr.write(MSG["no_display"] + "\n")
+            sys.stderr.write(MSG["dnf_reco"] + "\n")
+            sys.exit(1)
+
+        terms = ["gnome-terminal","konsole","xfce4-terminal","xterm","mate-terminal","tilix","alacritty","kitty"]
+        term = next((t for t in terms if shutil.which(t)), None)
+
+        if not term:
+            sys.stderr.write(MSG["no_terminal"] + "\n")
+            try:
+                proc = subprocess.run([sys.executable, "-m", "pip", "install", "--user"] + missing, check=False)
+            except Exception as e:
+                sys.stderr.write("pip failed: " + str(e) + "\n")
+                sys.stderr.write(MSG["dnf_reco"] + "\n")
+                sys.exit(1)
+            if proc.returncode != 0:
+                sys.stderr.write(MSG["install_fail"] + "\n")
+                sys.stderr.write(MSG["pip_cmd"].format(pkgs=pkgs_str) + "\n")
+                sys.exit(1)
+        else:
+            pip_cmd = shlex.join([sys.executable, "-m", "pip", "install", "--user"] + missing)
+            shell_cmd = f"bash -lc 'echo \"{shlex.quote(MSG['missing'].format(pkgs=pkgs_str))}\"; {pip_cmd}; echo; echo \"{shlex.quote(MSG['press_enter'])}\"; read -r'"
+            if term in ("gnome-terminal","tilix"):
+                cmd = [term, "--", "bash", "-c", shell_cmd]
+            elif term == "konsole":
+                cmd = [term, "-e", "bash", "-c", shell_cmd]
+            else:
+                cmd = [term, "-e", "bash", "-c", shell_cmd]
+            try:
+                subprocess.run(cmd)
+            except Exception as e:
+                sys.stderr.write("Failed to launch terminal: " + str(e) + "\n")
+                sys.stderr.write(MSG["pip_cmd"].format(pkgs=pkgs_str) + "\n")
+                sys.exit(1)
+
+            still_missing = [pip for mod, pip in REQ if not module_ok(mod)]
+            if still_missing:
+                sys.stderr.write(MSG["missing"].format(pkgs=" ".join(still_missing)) + "\n")
+                sys.stderr.write(MSG["dnf_reco"] + "\n")
+# --- END: localized auto-install missing Python deps (improved) ---
+
 import os, sys, time, json, socket, subprocess, urllib.parse, getpass
 from pathlib import Path
 
@@ -154,13 +327,13 @@ def auto_mount():
     admin_password = ask_admin_password(T_PW, log=log)
 
     if not os.path.exists(SECURE_FILE):
-        log(f"{T['information_log']} {T['log(T["no_config_file']}")
+        log(f"{T.get('information_log','[i]')} {T.get('no_config_file','No config file')}")
         return
 
     try:
         mounts = decrypt(admin_password)
     except Exception as e:
-        log(f"{T['error_log']} {T['log(T["decryption_failed'].format(error=e)}")
+        log(f"{T.get('error_log','[ERROR]')} {T.get('decryption_failed','Decryption failed').format(error=e)}")
         return
 
     for m in mounts:
@@ -174,7 +347,7 @@ def auto_mount():
         smb_version = m.get('smb_version', '').strip()
 
         if "last_known_status" not in m:
-                m["last_known_status"] = "unknown"
+            m["last_known_status"] = "unknown"
 
         if is_mounted(path):
             log(f"{T['skip_log']} {T['already_mounted']} {path}")
@@ -270,8 +443,12 @@ def auto_mount():
         except Exception as e:
             log(f"{T['error_log']} {T['generic_mount_fail'].format(url=url, path=path, error=e)}")
 
+    # persist changes: encrypt with correct variables
+    try:
+        encrypt(admin_password, mounts)
+    except Exception as e:
+        log(f"{T.get('error_log','[ERROR]')} {T.get('config_save_failed','Config save failed').format(str(e))}")
 
-    encrypt(self.admin_password, self.mounts)
     clean_mount_bookmarks()
     launch_net_unmounter(admin_password)
     time.sleep(3)

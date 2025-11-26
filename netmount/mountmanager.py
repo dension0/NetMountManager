@@ -10,6 +10,7 @@ import pwd
 import threading
 import shlex
 import tempfile
+import textwrap
 import time
 import socket
 import getpass
@@ -1240,32 +1241,31 @@ class KeySetupWizard(QDialog):
             self.instructions.append(self.lang['wizard_copying'])
             QApplication.processEvents()
 
-            with open(pubkey_path, 'r') as f:
-                pubkey_content = f.read().strip().replace('"', r'\"')
+            marker_file_quoted = shlex.quote(marker_file)
+            script_content = textwrap.dedent(f"""
+                #!/bin/bash
+                set -e
 
-            script_content = f"""#!/bin/bash
-set -e
+                # 1. {self.lang['step1']}
+                sshpass -p {shlex.quote(pw)} ssh -p {port} -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=no -o ConnectTimeout=5 {shlex.quote(ssh_target)} "echo '{self.lang['step1_ok']}'" || exit 1
 
-# 1. {self.lang['step1']}
-sshpass -p {shlex.quote(pw)} ssh -p {port} -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=no -o ConnectTimeout=5 {shlex.quote(ssh_target)} "echo '{self.lang['step1_ok']}'" || exit 1
+                # 2. {self.lang['step2']}
+                sshpass -p {shlex.quote(pw)} ssh -p {port} -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=no {shlex.quote(ssh_target)} "mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo '{self.lang['step2_ok']}'" || exit 1
 
-# 2. {self.lang['step2']}
-sshpass -p {shlex.quote(pw)} ssh -p {port} -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=no {shlex.quote(ssh_target)} "mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo '{self.lang['step2_ok']}'" || exit 1
+                # 3. {self.lang['step3']}
+                sshpass -p {shlex.quote(pw)} scp -P {port} -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=no {shlex.quote(pubkey_path)} {shlex.quote(ssh_target + ':/tmp/netmount_tmp_key.pub')} && echo '{self.lang['step3_ok']}' || exit 1
 
-# 3. {self.lang['step3']}
-sshpass -p {shlex.quote(pw)} scp -P {port} -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=no {shlex.quote(pubkey_path)} {shlex.quote(ssh_target + ':/tmp/netmount_tmp_key.pub')} && echo '{self.lang['step3_ok']}' || exit 1
+                # 4. {self.lang['step4']}
+                sshpass -p {shlex.quote(pw)} ssh -p {port} -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=no {shlex.quote(ssh_target)} '
+                    touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys &&
+                    grep -qxF "$(cat /tmp/netmount_tmp_key.pub)" ~/.ssh/authorized_keys || cat /tmp/netmount_tmp_key.pub >> ~/.ssh/authorized_keys;
+                    rm /tmp/netmount_tmp_key.pub
+                    echo "{self.lang['step4_ok']}"
+                ' || exit 1
 
-# 4. {self.lang['step4']}
-sshpass -p {shlex.quote(pw)} ssh -p {port} -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=no {shlex.quote(ssh_target)} '
-    touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys &&
-    grep -qxF "$(cat /tmp/netmount_tmp_key.pub)" ~/.ssh/authorized_keys || cat /tmp/netmount_tmp_key.pub >> ~/.ssh/authorized_keys;
-    rm /tmp/netmount_tmp_key.pub
-    echo "{self.lang['step4_ok']}"
-' || exit 1
-
-# 5. {self.lang['step5']}
-echo "__OK__" > {marker_file}
-"""
+                # 5. {self.lang['step5']}
+                echo "__OK__" > {marker_file_quoted}
+            """).lstrip()
 
             try:
                 with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as tmpfile:
