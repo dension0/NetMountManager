@@ -50,7 +50,8 @@ class LoadingDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(T['title'])
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
-        self.setModal(True)
+        self.setModal(False)
+        self.setWindowModality(Qt.WindowModality.NonModal)
 
         layout = QVBoxLayout()
         label = QLabel(T['loading_check'])
@@ -180,8 +181,8 @@ class MountManager(QWidget):
         footer.setAlignment(Qt.AlignmentFlag.AlignCenter)
         footer.setText(
             f"<small>&copy; {current_year} Created by <b>Madarász László</b> (@dension) – "
-            f"<a href='https://pixellegion.org'>pixellegion.org</a> – "
-            f"<a href='mailto:info@pixellegion.org'>info@pixellegion.org</a> | Powered by "
+            f"<a href='https://volthost.hu'>volthost.hu</a> – "
+            f"<a href='mailto:info@volthost.hu'>info@volthost.hu</a> | Powered by "
             f"<a href='https://chatgpt.com'>ChatGPT</a></small>"
         )
         footer.setStyleSheet("""
@@ -321,13 +322,14 @@ QListWidget::item:hover {
             self.pass_input.setStyleSheet("")
             self.pass_input.setPlaceholderText(self.T['password'])
 
-
     def load_config(self):
         try:
+            self.mounts = []
+
             self.mounts = decrypt(self.admin_password)
 
             if not isinstance(self.mounts, list):
-                raise ValueError("Konfigurációs adat nem lista típusú.")
+                raise ValueError(self.T.get('secure_not_list', 'Configuration data is not of list type.'))
 
             updated = False
 
@@ -341,13 +343,40 @@ QListWidget::item:hover {
             if updated:
                 self.save_config()
 
-        except ValueError:
-            QMessageBox.critical(self, self.T['error'], self.T['invalid_config'])
-            self.mounts = []
         except Exception as e:
-            QMessageBox.critical(self, self.T['error'], self.T['config_load_failed'].format(str(e)))
-            self.mounts = []
+            err_name = type(e).__name__
+            err_text = str(e)
 
+            is_invalid_token = ('InvalidToken' in err_name) or ('InvalidToken' in err_text) or ('invalid token' in err_text.lower())
+
+            if is_invalid_token:
+                title = self.T.get('secure_corrupt_title', 'Secure file problem')
+                text = self.T.get(
+                    'secure_corrupt_text',
+                    "The secure configuration file exists but could not be decrypted (it may be corrupted or the password is incorrect).\n\n"
+                    "Do you want to create a new empty secure file? (This will overwrite the existing secure file and you will lose stored mounts.)"
+                )
+                reply = QMessageBox.question(
+                    self,
+                    title,
+                    text,
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                )
+                if reply == QMessageBox.StandardButton.Yes:
+                    try:
+                        encrypt(self.admin_password, [], SECURE_FILE)
+                        QMessageBox.information(self, self.T.get('info', 'Info'),
+                                                self.T.get('secure_created', 'Secure file recreated as empty.'))
+                        self.mounts = []
+                    except Exception as ee:
+                        QMessageBox.critical(self, self.T['error'], self.T['config_save_failed'].format(str(ee)))
+                        self.mounts = []
+                else:
+                    QMessageBox.critical(self, self.T['error'], self.T.get('secure_abort_msg', 'Cannot continue without a valid secure file.'))
+                    self.mounts = []
+            else:
+                QMessageBox.critical(self, self.T['error'], self.T['config_load_failed'].format(str(e)))
+                self.mounts = []
 
     def save_config(self):
         try:
@@ -464,7 +493,7 @@ QListWidget::item:hover {
                         mount_btn.setStyleSheet("background-color: #f8d7da; color: #721c24;")
 
             except Exception as e:
-                print(f"{self.T['warning']} {self.T['mount_item_error']} {e}")
+                print(f"{self.T.get('warning','Warning')} {self.T.get('mount_item_error','Mount item error')} {e}")
                 continue
 
     def export_secure_config(self):
@@ -476,12 +505,24 @@ QListWidget::item:hover {
         )
         if not path:
             return
+
         try:
+            dest_path = Path(path)
+            if dest_path.suffix.lower() != ".secure":
+                dest_path = dest_path.with_suffix(".secure")
+
             encrypt(self.admin_password, self.mounts)
-            QMessageBox.information(self, self.T['success'], self.T['export_success'].format(path))
+
+            if not os.path.exists(SECURE_FILE):
+                missing_msg = self.T.get('secure_file_missing', "Secure file not found after encryption.")
+                QMessageBox.critical(self, self.T['error'], self.T['export_failed'].format(missing_msg))
+                return
+
+            shutil.copy2(SECURE_FILE, str(dest_path))
+
+            QMessageBox.information(self, self.T['success'], self.T['export_success'].format(str(dest_path)))
         except Exception as e:
             QMessageBox.critical(self, self.T['error'], self.T['export_failed'].format(str(e)))
-
 
     def import_secure_config(self):
         path, _ = QFileDialog.getOpenFileName(

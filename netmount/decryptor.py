@@ -22,14 +22,22 @@ class LockedSecureFile:
         self.file = None
 
     def __enter__(self):
+        # Ensure parent exists before opening
+        self.file_path.parent.mkdir(parents=True, exist_ok=True)
         self.file = open(self.file_path, self.mode)
         fcntl.flock(self.file.fileno(), fcntl.LOCK_EX)
         return self.file
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self.file:
-            fcntl.flock(self.file.fileno(), fcntl.LOCK_UN)
-            self.file.close()
+            try:
+                fcntl.flock(self.file.fileno(), fcntl.LOCK_UN)
+            except Exception:
+                pass
+            try:
+                self.file.close()
+            except Exception:
+                pass
 
 def derive_key(password: str) -> bytes:
     salt = hashlib.md5(password.encode(ENCODING)).digest()
@@ -56,9 +64,21 @@ def decrypt(password: str, file_path: Path = SECURE_FILE) -> Any:
         encrypt(password, [], file_path)
         return []
 
+    try:
+        if file_path.stat().st_size == 0:
+            encrypt(password, [], file_path)
+            return []
+    except Exception:
+        pass
+
     key = derive_key(password)
     fernet = Fernet(key)
     with LockedSecureFile(file_path, "rb") as f:
         ciphertext = f.read()
+
+    if not ciphertext:
+        encrypt(password, [], file_path)
+        return []
+
     decrypted_data = fernet.decrypt(ciphertext)
     return json.loads(decrypted_data.decode(ENCODING))

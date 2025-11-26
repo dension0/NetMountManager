@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 import sys
-import sys
 import os
 import traceback
-import subprocess
 from pathlib import Path
 
 current_file = Path(__file__).resolve()
@@ -51,11 +49,45 @@ except Exception as e:
         err["title"],
         err["text"].format(path=lang_file, error=e)
     )
+    traceback.print_exc()
     sys.exit(1)
+
+def show_fatal_trace(title: str, short_text: str, trace_text: str):
+    print("=== FATAL ===", file=sys.stderr)
+    print(title, file=sys.stderr)
+    print(short_text, file=sys.stderr)
+    print(trace_text, file=sys.stderr)
+
+    try:
+        dlg = QMessageBox()
+        dlg.setIcon(QMessageBox.Critical)
+        dlg.setWindowTitle(title)
+        dlg.setText(short_text)
+        dlg.setStandardButtons(QMessageBox.Ok)
+        dlg.setDetailedText(trace_text)
+        dlg.exec()
+    except Exception:
+        traceback.print_exception(Exception, Exception(short_text), None, file=sys.stderr)
 
 def main():
     app = QApplication(sys.argv)
     app.setWindowIcon(QIcon(str(icon_path)))
+
+    def _global_excepthook(exctype, value, tb):
+        try:
+            tb_text = ''.join(traceback.format_exception(exctype, value, tb))
+            title = T.get('fatal_error_title_1', 'Fatal error')
+            short = T.get('fatal_error_text_1', 'Unexpected error. See details.')
+
+            msg1 = T.get('console_unhandled_exception', 'Unhandled exception (global hook):')
+            print(msg1, file=sys.stderr)
+            traceback.print_exception(exctype, value, tb, file=sys.stderr)
+
+            show_fatal_trace(title, short, tb_text)
+        except Exception:
+            traceback.print_exception(exctype, value, tb, file=sys.stderr)
+
+    sys.excepthook = _global_excepthook
 
     try:
         admin_pw = os.environ.get("NETMOUNT_PW") or ask_admin_password(T_PW)
@@ -65,16 +97,42 @@ def main():
         QApplication.processEvents()
 
         def after_load():
-            window = MountManager(T, admin_pw)
-            window.refresh_with_loading(external_dialog=loading)
-            loading.close()
-            window.show()
+            try:
+                window = MountManager(T, admin_pw)
+
+                app._main_window = window
+
+                try:
+                    window.refresh_with_loading(external_dialog=loading)
+                except Exception:
+                    raise
+
+                loading.close()
+                window.show()
+
+                msg2 = T.get('console_app_started', 'Application started and main window shown.')
+                print(msg2, file=sys.stderr)
+
+            except Exception:
+                tb = traceback.format_exc()
+                title = T.get('fatal_error_title_0', 'Fatal error during startup')
+                short = T.get('fatal_error_text_0', 'An unexpected error occurred while starting the application. See details.')
+                try:
+                    loading.close()
+                except Exception:
+                    pass
+                show_fatal_trace(title, short, tb)
+                sys.exit(1)
 
         QTimer.singleShot(100, after_load)
         sys.exit(app.exec())
 
     except Exception:
-        traceback.print_exc()
+        tb = traceback.format_exc()
+        title = T.get('fatal_error_title_1', 'Fatal error')
+        short = T.get('fatal_error_text_1', 'Unexpected error. See details.')
+        show_fatal_trace(title, short, tb)
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

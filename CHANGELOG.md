@@ -1,5 +1,57 @@
 # Changelog
 
+## [v1.2.3] – 2025-11-26
+
+### 🛠 Stabil indítás, biztonságos secure/bookmark kezelés és többnyelvű hibakezelés
+🔐 Biztonságos secure fájl kezelés
+    🆕 Ha a secure fájl nem létezik vagy 0 bájt, automatikusan létrejön titkosítva egy üres lista — az alkalmazás nem lép ki induláskor.
+    ⚠️ InvalidToken (rossz jelszó / törött fájl) esetén felhasználói dialógus kérdez: lehetőség az üres secure fájl létrehozására — nincs csendes kilépés.
+
+⚙️ Indítási stabilitás és hibajelzés
+    🧰 Globális excepthook: minden nem kezelt kivétel konzolra íródik és részletes `QDialogban` jelenik meg (nem készítünk logfájlokat).
+    🧷 Megtartja a főablak referenciáját (`app._main_window`), így a GC nem zárja be a GUI-t.
+    ⏳ `LoadingDialog non-blocking` viselkedés + `after_load()` hibakezelés javítva; `traceback dialog` megjelenik szükség esetén.
+
+📚 Könyvjelzők (XBEL) biztonságos mentése / visszaállítása
+    🔁 Bookmark generálás és tisztítás logika bővítve — regenerálás az aktív csatolások alapján.
+    🧩 Könyvjelző funkciók megerősítve: `add_place`, `remove_place`, `clean_mount_bookmarks`, `regenerate_bookmarks_from_active_mounts(mounts)`.
+
+🌐 Többnyelvű (HU/EN) hibaüzenetek és nyelvi kulcsok
+    🗂️ Nyelvi fájlok betöltése és többnyelvű hibaüzenetek beépítve (pl. `secure_corrupt_*`, `console_app_started`, `fatal_error_*`).
+    ✏️ Apró elírások javítva (pl. `console_app_started`).
+
+🖱️ Kisebb UI viselkedésjavítások
+    💬 `QMessageBox` használata konzisztensen a felhasználóbarát hibajelzéshez.
+    🔧 Automount / unmount folyamok és `refresh_with_loading` logika finomítva.
+
+📝 Megjegyzés / javaslat
+    ♻️ Többszörös bookmark-regenerálás kódrészletek több fájlban találhatók — javasolt refaktorálás egyetlen, központi `bookmarks.py` implementációra.
+
+### 🛠 Robust startup, secure/bookmark safety and multilingual error handling
+🔐 Secure file safety
+    🆕 If the secure file is missing or zero-length, an encrypted empty list is created automatically so the app doesn't exit on startup.
+    ⚠️ On InvalidToken (bad password / corrupt file) a user dialog asks whether to recreate an empty secure file — no silent quit.
+
+⚙️ Startup stability and error reporting
+    🧰 Global excepthook: unhandled exceptions are printed to stderr and shown in a detailed `QDialog` (no file-based logging).
+    🧷 Keep a strong reference to the main window (`app._main_window`) to avoid GC closing the UI.
+    ⏳ `LoadingDialog is non-blocking`; `after_load()` shows `trace dialog` when needed.
+
+📚 Bookmarks (XBEL) safe save/load
+    🔁 Bookmark generation and cleaning logic improved — regenerate from active mounts.
+    🧩 Reinforced bookmarks module functions: `add_place`, `remove_place`, `clean_mount_bookmarks`, `regenerate_bookmarks_from_active_mounts(mounts)`.
+
+🌐 Multilingual error messages and language keys
+    🗂️ Language file loading and expanded keys (e.g. `secure_corrupt_*`, `console_app_started`, `fatal_error_*`).
+    ✏️ Typo fixes (e.g. `console_app_started`).
+
+🖱️ Small UI improvements
+    💬 Use `QMessageBox` consistently for user-facing errors.
+    🔧 Fine-tuned automount/unmount flows and `refresh_with_loading` logic.
+
+📝 Note / suggestion
+    ♻️ Duplicate bookmark-regeneration code exists in multiple files — recommend refactor to a single implementation in `bookmarks.py`.
+
 ## [v1.2.2] – 2025-11-26
 
 ### 🛠 Új funkciók & javítások
@@ -93,6 +145,7 @@
 ---
 
 ### 📦 Versions
+- `v1.2.3` – Robust startup, secure/bookmark safety and multilingual error handling
 - `v1.2.2` – Auto-installer, bilingual UX, no-file logging
 - `v1.2.1` – Improvements and safer operation release
 - `v1.2.0` – Feature release
