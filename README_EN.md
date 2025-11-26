@@ -155,8 +155,8 @@ Encrypted configuration stored at: data/.net_mounts.secure
 
 ## 👤 Author
 Developed by: Madarász László (@dension)
-Support / Issues: info@pixellegion.org
-Website: https://pixellegion.org
+Support / Issues: info@volthost.hu
+Website: https://volthost.hu
 Powered by: ChatGPT
 https://chatgpt.com
 
